@@ -11,13 +11,33 @@ use winit::{
 
 const SIM_W: u32 = 640;
 const SIM_H: u32 = 360;
+const FIXED_DT: f32 = 1.0 / 120.0;
 
-// Physics tuning
-const G: f32 = 2200.0;
-const SOFTEN: f32 = 40.0;
-const RESTITUTION: f32 = 0.85;
-const DRAG: f32 = 0.999;
-const MAX_SPEED: f32 = 2000.0;
+#[derive(Clone, Copy, Debug)]
+struct Settings {
+    g: f32,
+    soften: f32,
+    restitution: f32,
+    drag: f32,
+    max_speed: f32,
+    spawn_r: f32,
+    launch_k: f32,
+    time_scale: f32,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            g: 2200.0,
+            soften: 40.0,
+            restitution: 0.85,
+            drag: 0.999,
+            max_speed: 2000.0,
+            spawn_r: 8.0,
+            launch_k: 3.0,
+            time_scale: 1.0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Body {
@@ -54,7 +74,7 @@ impl World {
         self.bodies.push(b);
     }
 
-    fn step(&mut self, dt: f32) {
+    fn step(&mut self, dt: f32, settings: &Settings) {
         if self.paused || self.bodies.is_empty() {
             return;
         }
@@ -67,11 +87,11 @@ impl World {
             for j in (i + 1)..n {
                 let dx = self.bodies[j].x - self.bodies[i].x;
                 let dy = self.bodies[j].y - self.bodies[i].y;
-                let dist2 = dx * dx + dy * dy + SOFTEN * SOFTEN;
+                let dist2 = dx * dx + dy * dy + settings.soften * settings.soften;
                 let inv_dist = 1.0 / dist2.sqrt();
                 let inv_dist3 = inv_dist * inv_dist * inv_dist;
 
-                let f = G * self.bodies[i].m * self.bodies[j].m * inv_dist3;
+                let f = settings.g * self.bodies[i].m * self.bodies[j].m * inv_dist3;
 
                 let fx = f * dx;
                 let fy = f * dy;
@@ -86,12 +106,12 @@ impl World {
         // Integrate + walls
         for i in 0..n {
             let b = &mut self.bodies[i];
-            b.vx = (b.vx + ax[i] * dt) * DRAG;
-            b.vy = (b.vy + ay[i] * dt) * DRAG;
+            b.vx = (b.vx + ax[i] * dt) * settings.drag;
+            b.vy = (b.vy + ay[i] * dt) * settings.drag;
 
             let sp2 = b.vx * b.vx + b.vy * b.vy;
-            if sp2 > MAX_SPEED * MAX_SPEED {
-                let s = MAX_SPEED / sp2.sqrt();
+            if sp2 > settings.max_speed * settings.max_speed {
+                let s = settings.max_speed / sp2.sqrt();
                 b.vx *= s;
                 b.vy *= s;
             }
@@ -101,19 +121,19 @@ impl World {
 
             if b.x - b.r < 0.0 {
                 b.x = b.r;
-                b.vx = -b.vx * RESTITUTION;
+                b.vx = -b.vx * settings.restitution;
             }
             if b.x + b.r > SIM_W as f32 {
                 b.x = SIM_W as f32 - b.r;
-                b.vx = -b.vx * RESTITUTION;
+                b.vx = -b.vx * settings.restitution;
             }
             if b.y - b.r < 0.0 {
                 b.y = b.r;
-                b.vy = -b.vy * RESTITUTION;
+                b.vy = -b.vy * settings.restitution;
             }
             if b.y + b.r > SIM_H as f32 {
                 b.y = SIM_H as f32 - b.r;
-                b.vy = -b.vy * RESTITUTION;
+                b.vy = -b.vy * settings.restitution;
             }
         }
 
@@ -153,7 +173,7 @@ impl World {
                     let vel_along_normal = rvx * nx + rvy * ny;
 
                     if vel_along_normal < 0.0 {
-                        let e = RESTITUTION;
+                        let e = settings.restitution;
                         let inv_mi = 1.0 / mi;
                         let inv_mj = 1.0 / mj;
                         let j_impulse = -(1.0 + e) * vel_along_normal / (inv_mi + inv_mj);
@@ -219,6 +239,84 @@ fn draw_filled_circle(frame: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32
     }
 }
 
+const FONT_W: i32 = 5;
+const FONT_H: i32 = 7;
+const FONT_SPACING: i32 = 1;
+
+fn draw_text(frame: &mut [u8], w: u32, h: u32, x: i32, y: i32, text: &str, rgba: [u8; 4]) {
+    let mut cx = x;
+    let mut cy = y;
+    for ch in text.chars() {
+        if ch == '\n' {
+            cy += FONT_H + 2;
+            cx = x;
+            continue;
+        }
+        let glyph = glyph_5x7(ch.to_ascii_uppercase());
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..FONT_W {
+                let shift = (FONT_W - 1 - col) as u32;
+                if (bits >> shift) & 1 == 1 {
+                    let px = cx + col;
+                    let py = cy + row as i32;
+                    if px >= 0 && py >= 0 && px < w as i32 && py < h as i32 {
+                        put_pixel(frame, w, px, py, rgba);
+                    }
+                }
+            }
+        }
+        cx += FONT_W + FONT_SPACING;
+    }
+}
+
+fn glyph_5x7(c: char) -> [u8; 7] {
+    match c {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'J' => [0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100],
+        '-' => [0b00000, 0b00000, 0b00000, 0b01110, 0b00000, 0b00000, 0b00000],
+        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+        ' ' => [0, 0, 0, 0, 0, 0, 0],
+        _ => [0, 0, 0, 0, 0, 0, 0],
+    }
+}
+
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
@@ -233,6 +331,11 @@ struct App {
 
     last: Option<Instant>,
     acc: f32,
+
+    settings: Settings,
+    show_hud: bool,
+    step_once: bool,
+    fps: f32,
 }
 
 impl ApplicationHandler for App {
@@ -258,6 +361,11 @@ impl ApplicationHandler for App {
 
         self.cursor_px = (SIM_W as usize / 2, SIM_H as usize / 2);
         self.drag_start = None;
+
+        self.settings = Settings::default();
+        self.show_hud = true;
+        self.step_once = false;
+        self.fps = 0.0;
 
         self.world.seed();
         self.last = Some(Instant::now());
@@ -296,14 +404,19 @@ impl ApplicationHandler for App {
                 (MouseButton::Left, ElementState::Released) => {
                     if let Some(start) = self.drag_start.take() {
                         let end = self.cursor_px;
-                        let vx = (start.0 as f32 - end.0 as f32) * 3.0;
-                        let vy = (start.1 as f32 - end.1 as f32) * 3.0;
-                        self.world.add_body(Body::new(start.0 as f32, start.1 as f32, vx, vy, 8.0));
+                        let vx = (start.0 as f32 - end.0 as f32) * self.settings.launch_k;
+                        let vy = (start.1 as f32 - end.1 as f32) * self.settings.launch_k;
+                        self.world.add_body(Body::new(start.0 as f32, start.1 as f32, vx, vy, self.settings.spawn_r));
                     }
                 }
                 (MouseButton::Right, ElementState::Pressed) => {
-                    self.world
-                        .add_body(Body::new(self.cursor_px.0 as f32, self.cursor_px.1 as f32, 0.0, 0.0, 14.0));
+                    self.world.add_body(Body::new(
+                        self.cursor_px.0 as f32,
+                        self.cursor_px.1 as f32,
+                        0.0,
+                        0.0,
+                        self.settings.spawn_r,
+                    ));
                 }
                 _ => {}
             },
@@ -312,9 +425,57 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && !repeat {
                     match physical_key {
                         PhysicalKey::Code(KeyCode::Space) => self.world.paused = !self.world.paused,
+                        PhysicalKey::Code(KeyCode::KeyN) => {
+                            if self.world.paused {
+                                self.step_once = true;
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::KeyH) => self.show_hud = !self.show_hud,
                         PhysicalKey::Code(KeyCode::KeyR) => self.world.seed(),
                         PhysicalKey::Code(KeyCode::KeyC) => self.world.clear(),
                         PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                        PhysicalKey::Code(KeyCode::BracketLeft) => {
+                            self.settings.spawn_r = (self.settings.spawn_r - 1.0).max(2.0);
+                        }
+                        PhysicalKey::Code(KeyCode::BracketRight) => {
+                            self.settings.spawn_r = (self.settings.spawn_r + 1.0).min(40.0);
+                        }
+                        PhysicalKey::Code(KeyCode::Semicolon) => {
+                            self.settings.launch_k = (self.settings.launch_k - 0.25).max(0.5);
+                        }
+                        PhysicalKey::Code(KeyCode::Quote) => {
+                            self.settings.launch_k = (self.settings.launch_k + 0.25).min(10.0);
+                        }
+                        PhysicalKey::Code(KeyCode::Minus) => {
+                            self.settings.g = (self.settings.g - 100.0).max(0.0);
+                        }
+                        PhysicalKey::Code(KeyCode::Equal) => {
+                            self.settings.g = (self.settings.g + 100.0).min(10000.0);
+                        }
+                        PhysicalKey::Code(KeyCode::Comma) => {
+                            self.settings.restitution = (self.settings.restitution - 0.02).max(0.0);
+                        }
+                        PhysicalKey::Code(KeyCode::Period) => {
+                            self.settings.restitution = (self.settings.restitution + 0.02).min(1.0);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyK) => {
+                            self.settings.drag = (self.settings.drag - 0.002).max(0.95);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyL) => {
+                            self.settings.drag = (self.settings.drag + 0.002).min(1.0);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyU) => {
+                            self.settings.max_speed = (self.settings.max_speed - 100.0).max(100.0);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyI) => {
+                            self.settings.max_speed = (self.settings.max_speed + 100.0).min(5000.0);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyO) => {
+                            self.settings.time_scale = (self.settings.time_scale - 0.1).max(0.1);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyP) => {
+                            self.settings.time_scale = (self.settings.time_scale + 0.1).min(4.0);
+                        }
                         _ => {}
                     }
                 }
@@ -347,6 +508,29 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                if self.show_hud {
+                    let paused = if self.world.paused { "YES" } else { "NO" };
+                    let hud = format!(
+                        "PHYSICS HUD (H TO HIDE)\n\
+FPS: {fps:>5.1}  BODIES: {bodies:>3}  PAUSED: {paused}  DT: {dt_ms:>4.1}MS\n\
+G: {g:>6.0}  DRAG: {drag:.4}  REST: {rest:.2}  MAXV: {max_v:>5.0}\n\
+SPAWN R: {spawn_r:>4.1}  LAUNCH K: {launch_k:.1}  TIMESCALE: {ts:.2}\n\
+SPACE: PAUSE  N: STEP  R: SEED  C: CLEAR  ESC: QUIT",
+                        fps = self.fps,
+                        bodies = self.world.bodies.len(),
+                        paused = paused,
+                        dt_ms = FIXED_DT * 1000.0,
+                        g = self.settings.g,
+                        drag = self.settings.drag,
+                        rest = self.settings.restitution,
+                        max_v = self.settings.max_speed,
+                        spawn_r = self.settings.spawn_r,
+                        launch_k = self.settings.launch_k,
+                        ts = self.settings.time_scale,
+                    );
+                    draw_text(frame, SIM_W, SIM_H, 8, 8, &hud, [240, 240, 240, 255]);
+                }
+
                 // draw to window
                 let _ = pixels.render();
             }
@@ -368,11 +552,27 @@ impl ApplicationHandler for App {
             frame_dt = 0.1;
         }
 
-        let dt = 1.0 / 120.0;
-        self.acc += frame_dt;
-        while self.acc >= dt {
-            self.world.step(dt);
-            self.acc -= dt;
+        if frame_dt > 0.0 {
+            let inst = 1.0 / frame_dt;
+            self.fps = if self.fps == 0.0 {
+                inst
+            } else {
+                self.fps * 0.9 + inst * 0.1
+            };
+        }
+
+        if self.world.paused {
+            self.acc = 0.0;
+            if self.step_once {
+                self.world.step(FIXED_DT, &self.settings);
+                self.step_once = false;
+            }
+        } else {
+            self.acc += frame_dt * self.settings.time_scale;
+            while self.acc >= FIXED_DT {
+                self.world.step(FIXED_DT, &self.settings);
+                self.acc -= FIXED_DT;
+            }
         }
 
         window.request_redraw();
